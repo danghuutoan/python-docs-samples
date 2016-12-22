@@ -15,13 +15,15 @@
 """Sample that streams audio to the Google Cloud Speech API via GRPC."""
 
 from __future__ import division
-
+from thread import start_new_thread
 import contextlib
 import functools
 import re
 import signal
 import sys
 
+import socket
+import sys
 
 import google.auth
 import google.auth.transport.grpc
@@ -92,8 +94,23 @@ def _fill_buffer(buff, in_data, frame_count, time_info, status_flags):
     """Continuously collect data from the audio stream, into the buffer."""
     # print "_fill_buffer"
     buff.put(in_data)
-    return None, pyaudio.paContinue
+    # return None, pyaudio.paContinue
+    return 1
 
+def udp_thread(buff):
+    # Create a TCP/IP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    server_address = ('localhost', 8000)
+    print >>sys.stderr, 'starting up on %s port %s' % server_address
+    sock.bind(server_address)
+    #https://www.alsa-project.org/main/index.php/FramesPeriods
+    while True:
+        # print >>sys.stderr, '\nwaiting to receive message'
+        data, address = sock.recvfrom(4410*4)
+        _fill_buffer(buff, data, 0,0,0)
+        # print >>sys.stderr, 'received %s bytes from %s' % (len(data), address)
+        # print >>sys.stderr, data
 
 # [START audio_stream]
 @contextlib.contextmanager
@@ -101,27 +118,27 @@ def record_audio(rate, chunk):
     """Opens a recording stream in a context manager."""
     # Create a thread-safe buffer of audio data
     buff = queue.Queue()
-
-    audio_interface = pyaudio.PyAudio()
-    audio_stream = audio_interface.open(
-        format=pyaudio.paInt16,
-        # The API currently only supports 1-channel (mono) audio
-        # https://goo.gl/z757pE
-        channels=1, rate=rate,
-        input=True, frames_per_buffer=chunk,
-        # Run the audio stream asynchronously to fill the buffer object.
-        # This is necessary so that the input device's buffer doesn't overflow
-        # while the calling thread makes network requests, etc.
-        stream_callback=functools.partial(_fill_buffer, buff),
-    )
+    start_new_thread(udp_thread,(buff,))
+    # audio_interface = pyaudio.PyAudio()
+    # audio_stream = audio_interface.open(
+    #     format=pyaudio.paInt16,
+    #     # The API currently only supports 1-channel (mono) audio
+    #     # https://goo.gl/z757pE
+    #     channels=1, rate=rate,
+    #     input=True, frames_per_buffer=chunk,
+    #     # Run the audio stream asynchronously to fill the buffer object.
+    #     # This is necessary so that the input device's buffer doesn't overflow
+    #     # while the calling thread makes network requests, etc.
+    #     stream_callback=functools.partial(_fill_buffer, buff),
+    # )
 
     yield _audio_data_generator(buff)
 
-    audio_stream.stop_stream()
-    audio_stream.close()
+    # audio_stream.stop_stream()
+    # audio_stream.close()
     # Signal the _audio_data_generator to finish
     buff.put(None)
-    audio_interface.terminate()
+    # audio_interface.terminate()
 # [END audio_stream]
 
 
@@ -207,7 +224,7 @@ def listen_print_loop(recognize_stream):
 
             num_chars_printed = 0
 
-
+        
 def main():
     service = cloud_speech_pb2.SpeechStub(
         make_channel('speech.googleapis.com', 443))
