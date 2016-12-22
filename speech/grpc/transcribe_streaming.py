@@ -33,14 +33,14 @@ import pyaudio
 from six.moves import queue
 
 # Audio recording parameters
-RATE = 16000
+RATE = 44100
 CHUNK = int(RATE / 10)  # 100ms
 
 # The Speech API has a streaming limit of 60 seconds of audio*, so keep the
 # connection alive for that long, plus some more to give the API time to figure
 # out the transcription.
 # * https://g.co/cloud/speech/limits#content
-DEADLINE_SECS = 60 * 3 + 5
+DEADLINE_SECS = 10 * 3 + 5
 SPEECH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
 
@@ -83,12 +83,14 @@ def _audio_data_generator(buff):
         if None in data:
             stop = True
             data.remove(None)
+            print " stream is closed"
 
         yield b''.join(data)
 
 
 def _fill_buffer(buff, in_data, frame_count, time_info, status_flags):
     """Continuously collect data from the audio stream, into the buffer."""
+    # print "_fill_buffer"
     buff.put(in_data)
     return None, pyaudio.paContinue
 
@@ -155,6 +157,7 @@ def request_stream(data_stream, rate, interim_results=True):
     for data in data_stream:
         # Subsequent requests can all just have the content
         yield cloud_speech_pb2.StreamingRecognizeRequest(audio_content=data)
+        # print "streaming data"
 
 
 def listen_print_loop(recognize_stream):
@@ -171,7 +174,8 @@ def listen_print_loop(recognize_stream):
     num_chars_printed = 0
     for resp in recognize_stream:
         if resp.error.code != code_pb2.OK:
-            raise RuntimeError('Server error: ' + resp.error.message)
+            break
+            # raise RuntimeError('Server error: ' + resp.error.message)
 
         if not resp.results:
             continue
@@ -210,24 +214,23 @@ def main():
 
     # For streaming audio from the microphone, there are three threads.
     # First, a thread that collects audio data as it comes in
-    with record_audio(RATE, CHUNK) as buffered_audio_data:
-        # Second, a thread that sends requests with that data
-        requests = request_stream(buffered_audio_data, RATE)
-        # Third, a thread that listens for transcription responses
-        recognize_stream = service.StreamingRecognize(
-            requests, DEADLINE_SECS)
+    while True:
+        with record_audio(RATE, CHUNK) as buffered_audio_data:
+                # Second, a thread that sends requests with that data
+                requests = request_stream(buffered_audio_data, RATE)
+                # Third, a thread that listens for transcription responses
+                recognize_stream = service.StreamingRecognize(
+                    requests, DEADLINE_SECS)
+                # Exit things cleanly on interrupt
+                signal.signal(signal.SIGINT, lambda *_: recognize_stream.cancel())
 
-        # Exit things cleanly on interrupt
-        signal.signal(signal.SIGINT, lambda *_: recognize_stream.cancel())
-
-        # Now, put the transcription responses to use.
-        try:
-            listen_print_loop(recognize_stream)
-
-            recognize_stream.cancel()
-        except grpc.RpcError:
-            # This happens because of the interrupt handler
-            pass
+                # Now, put the transcription responses to use.
+                try:
+                    listen_print_loop(recognize_stream)
+                    recognize_stream.cancel()
+                except grpc.RpcError:
+                    # This happens because of the interrupt handler
+                    break
 
 
 if __name__ == '__main__':
